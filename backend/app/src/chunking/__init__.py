@@ -1,0 +1,1 @@
+from chunker import fixed_size_chunk
