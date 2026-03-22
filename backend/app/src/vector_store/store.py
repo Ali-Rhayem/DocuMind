@@ -20,12 +20,20 @@ class QdrantVectorStore:
         """Create collection if it doesn't exist."""
         try:
             self.client.get_collection(self.collection_name)
+            return
         except Exception:
+            pass
+
+        try:
             # Collection doesn't exist, create it with vector size 2 (from fake_embed)
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=2, distance=Distance.COSINE),
             )
+        except Exception as exc:
+            raise RuntimeError(
+                "Qdrant is unavailable. Start Qdrant on http://localhost:6333 before querying."
+            ) from exc
 
     def add(self, item_id: str, vector: list[float], payload: dict[str, Any]) -> None:
         """Add a vector with metadata to the collection."""
