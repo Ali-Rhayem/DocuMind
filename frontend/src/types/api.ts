@@ -23,9 +23,11 @@ export type DocumentMetadata = {
 }
 
 export type DocumentPreview = {
-  id: string
-  source: string
-  metadata: DocumentMetadata
+  name: string
+  type: string
+  size_mb: number
+  indexed: boolean
+  indexed_chunks: number
 }
 
 export type IngestionPreviewResponse = {
@@ -38,6 +40,16 @@ export type RetrievalSummary = {
   bm25_candidates: number
   fused_candidates: number
   final_k: number
+}
+
+export type RAGAnswer = {
+  text: string
+  citations: string[]
+  provider: string
+  model: string
+  status: 'generated' | 'fallback' | 'empty'
+  reason: string
+  latency_ms?: number
 }
 
 export type RAGResult = {
@@ -68,6 +80,7 @@ export type QueryResponse = {
   indexed_chunks: number
   source_count: number
   latency_ms?: number
+  answer: RAGAnswer
   retrieval: RetrievalSummary
   results: RAGResult[]
 }
@@ -83,10 +96,14 @@ export type IndexResponse = {
   collection: string
   indexed_chunks: number
   source_count?: number
+  skipped_documents?: number
+  removed_chunks?: number
+  processed_documents?: number
   vector_size?: number
   chunk_size?: number
   chunk_strategy: ChunkStrategy
   overlap: number
+  build_time_seconds?: number
   message?: string
 }
 
@@ -94,4 +111,35 @@ export type EvaluationStatusResponse = {
   enabled: boolean
   status: 'ready' | 'locked'
   message: string
+}
+
+export type UploadItem = {
+  filename: string
+  size_bytes: number
+  path: string
+  action: 'created' | 'replaced'
+}
+
+export type UploadSkipped = {
+  filename: string
+  reason: string
+}
+
+export type UploadRejection = {
+  filename: string
+  reason: string
+}
+
+export type UploadResponse = {
+  status: string
+  uploaded_count: number
+  uploaded: UploadItem[]
+  skipped: UploadSkipped[]
+  rejected: UploadRejection[]
+}
+
+export type DeleteDocumentResponse = {
+  status: string
+  deleted_file: string
+  removed_chunks: number
 }
