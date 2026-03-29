@@ -7,7 +7,12 @@ type SystemOverviewProps = {
   totalSizeBytes: number
   ocrCount: number
   notice: string
+  uploadNotice: string
+  pendingFiles: File[]
+  uploadLoading: boolean
   loading: boolean
+  onFilesSelected: (files: FileList | null) => void
+  onUpload: () => void
 }
 
 function formatSize(bytes: number) {
@@ -33,7 +38,12 @@ export function SystemOverview({
   totalSizeBytes,
   ocrCount,
   notice,
+  uploadNotice,
+  pendingFiles,
+  uploadLoading,
   loading,
+  onFilesSelected,
+  onUpload,
 }: SystemOverviewProps) {
   const sourcePreview = documents.slice(0, 5)
   const fileTypes = Object.entries(fileTypeCounts).sort((left, right) => right[1] - left[1])
@@ -48,6 +58,41 @@ export function SystemOverview({
       </div>
 
       {notice ? <p className="inline-message inline-message--warning">{notice}</p> : null}
+
+      <div className="upload-card">
+        <div className="subsection-heading">
+          <div>
+            <h3>Upload documents</h3>
+            <span>Drag in your corpus through the app instead of editing folders manually.</span>
+          </div>
+        </div>
+        <div className="upload-actions">
+          <label className="upload-input" key={pendingFiles.length === 0 ? 'upload-empty' : 'upload-selected'}>
+            <span>Select files</span>
+            <input
+              type="file"
+              multiple
+              accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.bmp,.tiff,.webp"
+              onChange={(event) => onFilesSelected(event.target.files)}
+            />
+          </label>
+          <button type="button" className="primary-button" onClick={onUpload} disabled={uploadLoading}>
+            {uploadLoading ? 'Uploading and indexing...' : 'Upload and Index'}
+          </button>
+        </div>
+        <div className="type-chip-grid">
+          {pendingFiles.length > 0 ? (
+            pendingFiles.map((file) => (
+              <span key={`${file.name}-${file.size}`} className="type-chip">
+                {file.name}
+              </span>
+            ))
+          ) : (
+            <span className="type-chip">No files selected</span>
+          )}
+        </div>
+        {uploadNotice ? <p className="inline-message inline-message--success">{uploadNotice}</p> : null}
+      </div>
 
       <div className="overview-grid">
         <article className="overview-card">
@@ -76,16 +121,14 @@ export function SystemOverview({
 
           {sourcePreview.length > 0 ? (
             sourcePreview.map((document) => (
-              <article key={document.id} className="source-item">
+              <article key={document.name} className="source-item">
                 <div>
-                  <p className="source-item__title">{document.metadata.filename ?? document.source}</p>
+                  <p className="source-item__title">{document.name}</p>
                   <p className="source-item__meta">
-                    {document.metadata.extension ?? 'unknown'} / {document.metadata.ocr_used ? 'OCR-backed' : 'Native text'}
+                    {document.type.toUpperCase()} / {document.indexed ? `Indexed (${document.indexed_chunks} chunks)` : 'Not indexed'}
                   </p>
                 </div>
-                <span className="source-item__size">
-                  {typeof document.metadata.size_bytes === 'number' ? formatSize(document.metadata.size_bytes) : 'n/a'}
-                </span>
+                <span className="source-item__size">{`${document.size_mb.toFixed(2)} MB`}</span>
               </article>
             ))
           ) : (
