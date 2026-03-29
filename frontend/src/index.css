@@ -25,13 +25,16 @@
 }
 
 html {
+  height: 100%;
   scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
   background:
     radial-gradient(circle at top left, rgba(201, 106, 61, 0.17), transparent 28%),
     radial-gradient(circle at 82% 14%, rgba(122, 139, 114, 0.15), transparent 26%),
@@ -78,7 +81,8 @@ a {
 }
 
 #root {
-  min-height: 100vh;
+  height: 100%;
+  overflow: visible;
 }
 
 @media (prefers-reduced-motion: reduce) {
