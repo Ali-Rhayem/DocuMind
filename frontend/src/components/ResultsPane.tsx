@@ -1,4 +1,5 @@
 import type { QueryResponse } from '../types/api.ts'
+import { AnswerPanel } from './AnswerPanel.tsx'
 
 type ResultsPaneProps = {
   response: QueryResponse | null
@@ -16,8 +17,8 @@ export function ResultsPane({ response, loading, selectedResultId, onSelectResul
     <section className="panel results-panel" aria-labelledby="results-title">
       <div className="section-header">
         <div>
-          <p className="section-kicker">Evidence Ranking</p>
-          <h2 id="results-title">Ranked chunks with citations, confidence, and retrieval signals.</h2>
+          <p className="section-kicker">Answer + Evidence</p>
+          <h2 id="results-title">Generated answer first, ranked citations and retrieval signals underneath.</h2>
         </div>
       </div>
 
@@ -41,6 +42,8 @@ export function ResultsPane({ response, loading, selectedResultId, onSelectResul
 
       {!loading && response ? (
         <div className="results-content">
+          <AnswerPanel answer={response.answer} />
+
           <div className="results-summary">
             <div>
               <p className="summary-label">Query</p>
