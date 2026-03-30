@@ -65,8 +65,17 @@ def _get_sbert_model() -> Any:
 
 def _sbert_embed(text: str) -> list[float]:
     model = _get_sbert_model()
-    vector = model.encode(text)
+    vector = model.encode(text, convert_to_numpy=True)
     return [float(x) for x in vector.tolist()] if hasattr(vector, "tolist") else [float(x) for x in vector]
+
+
+def _sbert_embed_batch(texts: list[str]) -> list[list[float]]:
+    """Batch embed multiple texts at once (3-5x faster than sequential)."""
+    if not texts:
+        return []
+    model = _get_sbert_model()
+    vectors = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+    return [[float(x) for x in vec] for vec in vectors]
 
 
 def _deterministic_fallback_embed(text: str) -> list[float]:
@@ -93,7 +102,10 @@ def embed_text(text: str) -> list[float]:
             _cache_put(text, vector)
             return vector
         except Exception:
-            pass
+            if _EMBED_PROVIDER == "openai":
+                vector = _deterministic_fallback_embed(text)
+                _cache_put(text, vector)
+                return vector
 
     try:
         vector = _sbert_embed(text)
@@ -111,3 +123,33 @@ def get_embedding_dim(sample_text: str = "dimension probe") -> int:
 # Backwards-compatible name used elsewhere in the repo.
 def fake_embed(text: str) -> list[float]:
     return embed_text(text)
+
+
+def embed_texts_batch(texts: list[str]) -> list[list[float]]:
+    """Batch embed for pipeline performance. Falls back gracefully."""
+    if not texts:
+        return []
+
+    vectors: list[list[float]] = []
+    wants_openai = _EMBED_PROVIDER == "openai" or (
+        _EMBED_PROVIDER == "auto" and bool(os.environ.get("OPENAI_API_KEY"))
+    )
+
+    if wants_openai and os.environ.get("OPENAI_API_KEY"):
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            response = client.embeddings.create(model=_OPENAI_MODEL, input=texts)
+            for item in response.data:
+                vectors.append([float(x) for x in item.embedding])
+            return vectors
+        except Exception:
+            if _EMBED_PROVIDER == "openai":
+                return [_deterministic_fallback_embed(text) for text in texts]
+
+    try:
+        vectors = _sbert_embed_batch(texts)
+        return vectors
+    except Exception:
+        return [_deterministic_fallback_embed(text) for text in texts]
