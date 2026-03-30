@@ -1,5 +1,6 @@
 from typing import Any
 import importlib
+import os
 import re
 
 
@@ -7,10 +8,19 @@ def _tokenize(text: str) -> set[str]:
     return set(re.findall(r"[a-zA-Z0-9]+", text.lower()))
 
 
+def _env_enabled(name: str, default: str = "1") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class CrossEncoderReranker:
     def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2") -> None:
         self.model_name = model_name
         self._model = None
+        self.enabled = _env_enabled("DOCUMIND_ENABLE_RERANKER", "1")
+
+        if not self.enabled:
+            return
+
         try:
             module = importlib.import_module("sentence_transformers")
             cross_encoder_cls = getattr(module, "CrossEncoder")
