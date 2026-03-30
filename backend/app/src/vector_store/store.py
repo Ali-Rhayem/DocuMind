@@ -1,6 +1,6 @@
 from typing import Any
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, PointIdsList, VectorParams, PointStruct
 
 
 class QdrantVectorStore:
@@ -65,6 +65,21 @@ class QdrantVectorStore:
             collection_name=self.collection_name,
             points=[point],
         )
+
+    def _numeric_id(self, item_id: str) -> int:
+        return hash(item_id) & 0x7FFFFFFF
+
+    def delete_ids(self, item_ids: list[str]) -> int:
+        """Delete points by their original string IDs. Returns number of requested deletions."""
+        if not item_ids:
+            return 0
+
+        numeric_ids = [self._numeric_id(item_id) for item_id in item_ids]
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=PointIdsList(points=numeric_ids),
+        )
+        return len(numeric_ids)
 
     def count(self) -> int:
         try:
