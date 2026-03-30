@@ -1,25 +1,58 @@
+import logging
 from pathlib import Path
+from time import perf_counter
 
 from app.src.chunking import chunk_document
-from app.src.embeddings.embedder import fake_embed
-from app.src.ingestion.loader import load_documents
+from app.src.embeddings.embedder import embed_text, embed_texts_batch
+from app.src.generation.answerer import generate_answer
+from app.src.ingestion.loader import collect_file_signatures, load_documents
 from app.src.retrieval.bm25 import BM25Index
 from app.src.retrieval.hybrid import reciprocal_rank_fusion
 from app.src.retrieval.reranker import CrossEncoderReranker
 from app.src.vector_store.store import QdrantVectorStore
 
+logger = logging.getLogger(__name__)
 
-def _collect_chunk_rows(data_dir: Path, chunk_size: int, chunk_strategy: str, overlap: int) -> list[dict[str, object]]:
-    documents = load_documents(data_dir)
+
+def _document_source_file(document: object) -> str:
+    metadata = getattr(document, "metadata", {}) or {}
+    source = str(getattr(document, "source", ""))
+    filename = str(metadata.get("filename", "") or "")
+    return filename or Path(source).name
+
+
+def _document_source_hash(document: object) -> str:
+    metadata = getattr(document, "metadata", {}) or {}
+    signature = str(metadata.get("file_signature", "") or "")
+    if signature:
+        return signature
+
+    size_bytes = metadata.get("size_bytes")
+    source = str(getattr(document, "source", ""))
+    return f"fallback:{size_bytes}:{Path(source).name}"
+
+
+def _collect_chunk_rows(
+    documents: list[object],
+    chunk_size: int,
+    chunk_strategy: str,
+    overlap: int,
+) -> list[dict[str, object]]:
+    logger.info(f"Collecting chunks with strategy={chunk_strategy}, chunk_size={chunk_size}, overlap={overlap}")
+    start_chunk = perf_counter()
+
     indexed_rows: list[dict[str, object]] = []
 
     for document in documents:
+        source_file = _document_source_file(document)
+        source_hash = _document_source_hash(document)
         chunks = chunk_document(
             document=document,
             chunk_size=chunk_size,
             strategy=chunk_strategy,
             overlap=overlap,
         )
+        logger.debug(f"Document {document.source}: {len(chunks)} chunks")
         for chunk_index, chunk_text in enumerate(chunks):
             if not chunk_text.strip():
                 continue
@@ -27,6 +60,8 @@ def _collect_chunk_rows(data_dir: Path, chunk_size: int, chunk_strategy: str, ov
             payload = {
                 "id": f"{document.id}:{chunk_index}",
                 "source": document.source,
+                "source_file": source_file,
+                "source_hash": source_hash,
                 "chunk_index": chunk_index,
                 "text": chunk_text,
                 "metadata": document.metadata,
@@ -34,6 +69,8 @@ def _collect_chunk_rows(data_dir: Path, chunk_size: int, chunk_strategy: str, ov
             }
             indexed_rows.append(payload)
 
+    elapsed_chunk = perf_counter() - start_chunk
+    logger.info(f"Chunking complete: {len(indexed_rows)} chunks in {elapsed_chunk:.2f}s")
     return indexed_rows
 
 
@@ -43,15 +80,14 @@ def build_index(
     collection_name: str = "documents",
     chunk_strategy: str = "fixed",
     overlap: int = 100,
+    skip_unchanged: bool = True,
+    prune_missing: bool = True,
 ) -> dict[str, object]:
-    indexed_rows = _collect_chunk_rows(
-        data_dir=data_dir,
-        chunk_size=chunk_size,
-        chunk_strategy=chunk_strategy,
-        overlap=overlap,
-    )
+    logger.info(f"Starting index build: collection={collection_name}")
+    start_build = perf_counter()
 
-    if not indexed_rows:
+    current_signatures = collect_file_signatures(data_dir)
+    if not current_signatures:
         return {
             "status": "empty",
             "collection": collection_name,
@@ -59,12 +95,100 @@ def build_index(
             "message": "No chunkable documents found.",
         }
 
-    indexed_vectors: list[list[float]] = []
+    store = QdrantVectorStore(collection_name=collection_name, vector_size=1)
+    existing_payloads = store.all_payloads()
+
+    existing_chunks_by_file: dict[str, set[str]] = {}
+    existing_hashes_by_file: dict[str, set[str]] = {}
+    for payload in existing_payloads:
+        source_file = str(
+            payload.get("source_file")
+            or (payload.get("metadata") or {}).get("filename")
+            or Path(str(payload.get("source", ""))).name
+        )
+        chunk_id = str(payload.get("id", "") or "")
+        source_hash = str(payload.get("source_hash") or (payload.get("metadata") or {}).get("file_signature") or "")
+
+        if source_file and chunk_id:
+            existing_chunks_by_file.setdefault(source_file, set()).add(chunk_id)
+        if source_file and source_hash:
+            existing_hashes_by_file.setdefault(source_file, set()).add(source_hash)
+
+    files_to_index: set[str] = set()
+    active_files: set[str] = set(current_signatures.keys())
+    skipped_documents = 0
+    removed_chunks = 0
+
+    for source_file, source_hash in current_signatures.items():
+        is_unchanged = (
+            skip_unchanged
+            and source_file in existing_hashes_by_file
+            and source_hash in existing_hashes_by_file[source_file]
+        )
+        if is_unchanged:
+            skipped_documents += 1
+            continue
+
+        stale_ids = sorted(existing_chunks_by_file.get(source_file, set()))
+        if stale_ids:
+            removed_chunks += store.delete_ids(stale_ids)
+
+        files_to_index.add(source_file)
+
+    if prune_missing:
+        missing_files = set(existing_chunks_by_file.keys()) - active_files
+        for source_file in sorted(missing_files):
+            stale_ids = sorted(existing_chunks_by_file.get(source_file, set()))
+            if stale_ids:
+                removed_chunks += store.delete_ids(stale_ids)
+
+    documents_to_index = load_documents(data_dir, include_files=files_to_index)
+
+    indexed_rows = _collect_chunk_rows(
+        documents=documents_to_index,
+        chunk_size=chunk_size,
+        chunk_strategy=chunk_strategy,
+        overlap=overlap,
+    )
+
+    if not indexed_rows and removed_chunks == 0:
+        return {
+            "status": "ok",
+            "collection": collection_name,
+            "indexed_chunks": 0,
+            "source_count": len(active_files),
+            "skipped_documents": skipped_documents,
+            "removed_chunks": removed_chunks,
+            "message": "All documents are already indexed. Nothing to update.",
+        }
+
+    if not indexed_rows and removed_chunks > 0:
+        elapsed_total = perf_counter() - start_build
+        return {
+            "status": "ok",
+            "collection": collection_name,
+            "indexed_chunks": 0,
+            "source_count": len(active_files),
+            "skipped_documents": skipped_documents,
+            "removed_chunks": removed_chunks,
+            "chunk_size": chunk_size,
+            "chunk_strategy": chunk_strategy,
+            "overlap": overlap,
+            "build_time_seconds": round(elapsed_total, 2),
+            "message": "Removed stale indexed chunks. No new documents required indexing.",
+        }
+
+    # Batch embed all chunks at once (3-5x faster than sequential)
+    logger.info(f"Embedding {len(indexed_rows)} chunks...")
+    start_embed = perf_counter()
+    chunk_texts = [str(row.get("text", "")) for row in indexed_rows]
+    indexed_vectors = embed_texts_batch(chunk_texts)
+    elapsed_embed = perf_counter() - start_embed
+    logger.info(f"Embedding took {elapsed_embed:.2f}s ({len(indexed_rows) / elapsed_embed:.1f} chunks/sec)")
+    
     index_payloads: list[dict[str, object]] = []
-    for row in indexed_rows:
-        vector = fake_embed(str(row.get("text", "")))
+    for row, vector in zip(indexed_rows, indexed_vectors):
         if vector:
-            indexed_vectors.append(vector)
             index_payloads.append(row)
 
     if not indexed_vectors:
@@ -76,12 +200,19 @@ def build_index(
         }
 
     vector_size = len(indexed_vectors[0])
+    logger.debug(f"Vector size: {vector_size}")
 
-    store = QdrantVectorStore(collection_name=collection_name, vector_size=vector_size)
-    store.recreate(vector_size=vector_size)
+    logger.info("Preparing vector store...")
+    start_store = perf_counter()
+    if store.count() == 0:
+        store.recreate(vector_size=vector_size)
+    elapsed_recreate = perf_counter() - start_store
+    logger.info(f"Vector store ready in {elapsed_recreate:.2f}s")
 
+    logger.info(f"Indexing {len(index_payloads)} vectors...")
+    start_index = perf_counter()
     indexed_chunks = 0
-    for payload, vector in zip(index_payloads, indexed_vectors):
+    for idx, (payload, vector) in enumerate(zip(index_payloads, indexed_vectors), 1):
         chunk_id = str(payload["id"])
         try:
             store.add(
@@ -90,20 +221,32 @@ def build_index(
                 payload=payload,
             )
             indexed_chunks += 1
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to index chunk {chunk_id}: {str(e)}")
             continue
+        if idx % 100 == 0:
+            logger.debug(f"Indexed {idx}/{len(index_payloads)} vectors")
+    elapsed_index = perf_counter() - start_index
+    logger.info(f"Indexing took {elapsed_index:.2f}s ({indexed_chunks / elapsed_index:.1f} vectors/sec)")
 
-    source_count = len({str(item.get("source", "")) for item in index_payloads})
+    source_count = len(active_files)
+    
+    elapsed_total = perf_counter() - start_build
+    logger.info(f"Index build complete: {indexed_chunks} chunks, {source_count} sources in {elapsed_total:.2f}s total")
 
     return {
         "status": "ok",
         "collection": collection_name,
         "indexed_chunks": indexed_chunks,
         "source_count": source_count,
+        "skipped_documents": skipped_documents,
+        "removed_chunks": removed_chunks,
+        "processed_documents": len(documents_to_index),
         "vector_size": vector_size,
         "chunk_size": chunk_size,
         "chunk_strategy": chunk_strategy,
         "overlap": overlap,
+        "build_time_seconds": round(elapsed_total, 2),
     }
 
 
@@ -119,11 +262,13 @@ def _normalize_confidence(scores: list[float]) -> list[float]:
 
 
 def query_index(query: str, k: int = 3, collection_name: str = "documents") -> dict[str, object]:
-    query_vector = fake_embed(query)
+    query_vector = embed_text(query)
     if not query_vector:
         return {
             "query": query,
             "indexed_chunks": 0,
+            "source_count": 0,
+            "answer": generate_answer(query=query, results=[]),
             "results": [],
             "retrieval": {
                 "vector_candidates": 0,
@@ -140,6 +285,8 @@ def query_index(query: str, k: int = 3, collection_name: str = "documents") -> d
         return {
             "query": query,
             "indexed_chunks": 0,
+            "source_count": 0,
+            "answer": generate_answer(query=query, results=[]),
             "results": [],
             "retrieval": {
                 "vector_candidates": 0,
@@ -199,9 +346,13 @@ def query_index(query: str, k: int = 3, collection_name: str = "documents") -> d
             }
         )
 
+    source_count = len({str(item.get("source", "")) for item in indexed_rows if item.get("source")})
+
     return {
         "query": query,
         "indexed_chunks": len(indexed_rows),
+        "source_count": source_count,
+        "answer": generate_answer(query=query, results=results),
         "retrieval": {
             "vector_candidates": len(vector_hits),
             "bm25_candidates": len(bm25_hits),
@@ -214,7 +365,7 @@ def query_index(query: str, k: int = 3, collection_name: str = "documents") -> d
 
 def run_pipeline(query: str, data_dir: Path, k: int = 3, chunk_size: int = 500) -> dict[str, object]:
     # Backwards-compatible helper: if index is empty, build once then query.
-    probe_store = QdrantVectorStore(collection_name="documents", vector_size=max(1, len(fake_embed(query) or [0.0])))
+    probe_store = QdrantVectorStore(collection_name="documents", vector_size=max(1, len(embed_text(query) or [0.0])))
     if probe_store.count() == 0:
         build_index(data_dir=data_dir, chunk_size=chunk_size, collection_name="documents")
     return query_index(query=query, k=k, collection_name="documents")
