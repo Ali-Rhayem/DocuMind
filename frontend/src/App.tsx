@@ -150,9 +150,13 @@ function App() {
   const [messageInput, setMessageInput] = useState('')
   const [loadingWorkspace, setLoadingWorkspace] = useState(true)
   const [sendingMessage, setSendingMessage] = useState(false)
+  const [activeGenerationChatId, setActiveGenerationChatId] = useState<string | null>(null)
   const [uploadLoading, setUploadLoading] = useState(false)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(readSidebarCollapsedState)
+  const [deleteCandidate, setDeleteCandidate] = useState<ChatThread | null>(null)
+  const [toastMessage, setToastMessage] = useState('')
   const timelineRef = useRef<HTMLDivElement | null>(null)
+  const toastTimerRef = useRef<number | null>(null)
 
   const selectedChat = useMemo(
     () => chats.find((chat) => chat.id === selectedChatId) ?? chats[0] ?? null,
@@ -240,6 +244,34 @@ function App() {
     })
   }
 
+  function showToast(message: string, timeoutMs = 2500) {
+    setToastMessage(message)
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current)
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage('')
+      toastTimerRef.current = null
+    }, timeoutMs)
+  }
+
+  function requestDeleteChat(chat: ChatThread) {
+    setDeleteCandidate(chat)
+  }
+
+  function cancelDeleteChat() {
+    setDeleteCandidate(null)
+  }
+
+  function confirmDeleteChat() {
+    if (!deleteCandidate) {
+      return
+    }
+    deleteChat(deleteCandidate.id)
+    setDeleteCandidate(null)
+    showToast('Chat deleted.')
+  }
+
   async function handleSendMessage() {
     const question = messageInput.trim()
     if (!question || !selectedChat) {
@@ -257,6 +289,7 @@ function App() {
 
     setMessageInput('')
     setSendingMessage(true)
+    setActiveGenerationChatId(selectedChat.id)
     setWorkspaceNotice('')
 
     setChats((current) =>
@@ -299,7 +332,7 @@ function App() {
           return {
             ...chat,
             updatedAt: new Date().toISOString(),
-            messages: [...chat.messages, userMessage, assistantMessage],
+            messages: [...chat.messages, assistantMessage],
           }
         })
       )
@@ -325,12 +358,13 @@ function App() {
           return {
             ...chat,
             updatedAt: new Date().toISOString(),
-            messages: [...chat.messages, userMessage, errorMessage],
+            messages: [...chat.messages, errorMessage],
           }
         })
       )
     } finally {
       setSendingMessage(false)
+      setActiveGenerationChatId(null)
     }
   }
 
@@ -439,26 +473,37 @@ function App() {
             </button>
             <button
               type="button"
-              className="button button--solid button--icon"
+              className="sidebar-nav-item sidebar-nav-item--mini"
               onClick={createChat}
               aria-label="New chat"
               title="New chat"
             >
-              +
+              <span className="sidebar-nav-item__icon">+</span>
+              <span>New chat</span>
             </button>
 
             <div className="sidebar-mini-threads" aria-label="Chats">
               {chats.map((chat) => (
-                <button
-                  key={chat.id}
-                  type="button"
-                  className={`mini-thread ${chat.id === selectedChatId ? 'mini-thread--active' : ''}`}
-                  onClick={() => setSelectedChatId(chat.id)}
-                  title={`${chat.title} (${chat.messages.length} messages)`}
-                >
-                  <span className="mini-thread__title">{chat.title}</span>
-                  <span className="mini-thread__count">{chat.messages.length}</span>
-                </button>
+                <div key={chat.id} className={`mini-thread-row ${chat.id === selectedChatId ? 'mini-thread-row--active' : ''}`}>
+                  <button
+                    type="button"
+                    className={`mini-thread ${chat.id === selectedChatId ? 'mini-thread--active' : ''}`}
+                    onClick={() => setSelectedChatId(chat.id)}
+                    title={`${chat.title} (${chat.messages.length} messages)`}
+                  >
+                    <span className="mini-thread__title">{chat.title}</span>
+                    <span className="mini-thread__count">{chat.messages.length}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="thread-delete thread-delete--mini"
+                    onClick={() => requestDeleteChat(chat)}
+                    aria-label={`Delete ${chat.title}`}
+                    title={`Delete ${chat.title}`}
+                  >
+                    x
+                  </button>
+                </div>
               ))}
             </div>
 
@@ -470,7 +515,7 @@ function App() {
         ) : (
           <div className="sidebar-expanded">
             <div className="sidebar-header">
-              <h1>DocuMind Chat</h1>
+              <h1>DocuMind</h1>
               <div className="sidebar-header-actions">
                 <button
                   type="button"
@@ -481,10 +526,14 @@ function App() {
                 >
                   {'<'}
                 </button>
-                <button type="button" className="button button--solid" onClick={createChat}>
-                  New chat
-                </button>
               </div>
+            </div>
+
+            <div className="sidebar-nav" aria-label="Primary sidebar actions">
+              <button type="button" className="sidebar-nav-item" onClick={createChat}>
+                <span className="sidebar-nav-item__icon">+</span>
+                <span>New chat</span>
+              </button>
             </div>
 
             <p className="sidebar-status">
@@ -548,7 +597,7 @@ function App() {
                     <button
                       type="button"
                       className="thread-delete"
-                      onClick={() => deleteChat(chat.id)}
+                      onClick={() => requestDeleteChat(chat)}
                       aria-label={`Delete ${chat.title}`}
                     >
                       x
@@ -589,31 +638,41 @@ function App() {
         <div className="timeline" ref={timelineRef}>
           <div className="timeline-track">
             {selectedChat?.messages.length ? (
-              selectedChat.messages.map((message) => (
-                <article key={message.id} className={`message message--${message.role}`}>
-                  <p>{message.content}</p>
-                  {message.citations.length > 0 ? (
-                    <div className="citation-list">
-                      {message.citations.map((citation) => (
-                        <span key={citation}>{citation}</span>
-                      ))}
-                    </div>
-                  ) : null}
-                  {message.role === 'assistant' && message.evidence.length > 0 ? (
-                    <details className="evidence-details">
-                      <summary>Show evidence</summary>
-                      <ul>
-                        {message.evidence.slice(0, 4).map((item) => (
-                          <li key={item.id}>
-                            <strong>{item.metadata.filename ?? item.source}</strong>
-                            <p>{item.text}</p>
-                          </li>
+              <>
+                {selectedChat.messages.map((message) => (
+                  <article key={message.id} className={`message message--${message.role}`}>
+                    <p>{message.content}</p>
+                    {message.citations.length > 0 ? (
+                      <div className="citation-list">
+                        {message.citations.map((citation) => (
+                          <span key={citation}>{citation}</span>
                         ))}
-                      </ul>
-                    </details>
-                  ) : null}
-                </article>
-              ))
+                      </div>
+                    ) : null}
+                    {message.role === 'assistant' && message.evidence.length > 0 ? (
+                      <details className="evidence-details">
+                        <summary>Show evidence</summary>
+                        <ul>
+                          {message.evidence.slice(0, 4).map((item) => (
+                            <li key={item.id}>
+                              <strong>{item.metadata.filename ?? item.source}</strong>
+                              <p>{item.text}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                  </article>
+                ))}
+
+                {sendingMessage && activeGenerationChatId === selectedChatId ? (
+                  <article className="message message--assistant message--skeleton" aria-live="polite" aria-label="Generating response">
+                    <div className="skeleton-line"></div>
+                    <div className="skeleton-line skeleton-line--short"></div>
+                    <div className="skeleton-line skeleton-line--tiny"></div>
+                  </article>
+                ) : null}
+              </>
             ) : (
               <div className="empty-state">
                 <h3>Start your first question</h3>
@@ -626,9 +685,14 @@ function App() {
         <footer className="composer">
           <textarea
             value={messageInput}
-            onChange={(event) => setMessageInput(event.target.value)}
+            onChange={(event) => {
+              setMessageInput(event.target.value)
+              const textarea = event.target as HTMLTextAreaElement
+              textarea.style.height = 'auto'
+              const scrollHeight = Math.min(textarea.scrollHeight, 280)
+              textarea.style.height = scrollHeight + 'px'
+            }}
             placeholder="Ask anything about your uploaded documents..."
-            rows={3}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
@@ -636,10 +700,38 @@ function App() {
               }
             }}
           />
-          <button type="button" className="button button--solid" disabled={sendingMessage} onClick={handleSendMessage}>
-            {sendingMessage ? 'Thinking...' : 'Send'}
+          <button
+            type="button"
+            className={`button button--solid ${sendingMessage ? 'is-loading composer-send--loading' : ''}`}
+            disabled={sendingMessage}
+            onClick={handleSendMessage}
+            aria-label={sendingMessage ? 'Generating response' : 'Send message'}
+          >
+            {sendingMessage ? <span className="composer-spinner" aria-hidden="true"></span> : null}
           </button>
         </footer>
+
+        <div className="toast-stack" aria-live="polite" aria-atomic="true">
+          {deleteCandidate ? (
+            <div className="toast toast--confirm" role="status">
+              <p>Delete chat "{deleteCandidate.title}"?</p>
+              <div className="toast-actions">
+                <button type="button" className="button" onClick={cancelDeleteChat}>
+                  Cancel
+                </button>
+                <button type="button" className="button button--solid" onClick={confirmDeleteChat}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {toastMessage ? (
+            <div className="toast" role="status">
+              <p>{toastMessage}</p>
+            </div>
+          ) : null}
+        </div>
       </section>
     </main>
   )
