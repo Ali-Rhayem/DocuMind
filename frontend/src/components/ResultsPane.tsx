@@ -42,7 +42,7 @@ export function ResultsPane({ response, loading, selectedResultId, onSelectResul
 
       {!loading && response ? (
         <div className="results-content">
-          <AnswerPanel answer={response.answer} />
+          <AnswerPanel answer={response.answer} results={response.results} />
 
           <div className="results-summary">
             <div>
