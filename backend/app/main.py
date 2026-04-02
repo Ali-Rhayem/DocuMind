@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 import hashlib
 import logging
 import os
@@ -155,6 +156,36 @@ def health_check() -> dict[str, str]:
 @app.get("/")
 def root() -> dict[str, str]:
     return {"message": "DocuMind backend is running"}
+
+
+@app.get("/files/{file_name}")
+def get_file(file_name: str) -> FileResponse:
+    """
+    Serve a file from the data directory.
+    file_name should be URL-safe. Supports PDFs, images, and text files.
+    """
+    # Prevent directory traversal attacks
+    if ".." in file_name or file_name.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid file name")
+    
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    file_path = data_dir / file_name
+    
+    # Ensure the file is within the data directory
+    try:
+        file_path = file_path.resolve()
+        if not file_path.is_relative_to(data_dir.resolve()):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+    
+    return FileResponse(file_path)
 
 
 @app.get("/ingestion/preview")
