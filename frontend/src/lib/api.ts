@@ -75,33 +75,62 @@ export function rebuildIndex(payload: IndexRequest) {
   })
 }
 
-export async function uploadDocuments(files: File[]) {
+type UploadDocumentsOptions = {
+  onUploadProgress?: (percent: number) => void
+}
+
+export async function uploadDocuments(files: File[], options?: UploadDocumentsOptions) {
   const formData = new FormData()
   files.forEach((file) => {
     formData.append('files', file)
   })
 
-  const response = await fetch(`${API_BASE_URL}/ingestion/upload`, {
-    method: 'POST',
-    body: formData,
-  })
+  const responseText = await new Promise<string>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${API_BASE_URL}/ingestion/upload`)
 
-  if (!response.ok) {
-    let detail = `Upload failed with HTTP ${response.status}.`
-
-    try {
-      const payload = (await response.json()) as { detail?: string }
-      if (typeof payload.detail === 'string' && payload.detail.length > 0) {
-        detail = payload.detail
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !options?.onUploadProgress) {
+        return
       }
-    } catch {
-      // Ignore JSON parsing errors and fall back to the default message.
+      const progress = Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100)))
+      options.onUploadProgress(progress)
     }
 
-    throw new Error(detail)
+    xhr.onerror = () => {
+      reject(new Error('Upload failed due to a network error.'))
+    }
+
+    xhr.onabort = () => {
+      reject(new Error('Upload was cancelled.'))
+    }
+
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        let detail = `Upload failed with HTTP ${xhr.status}.`
+        try {
+          const payload = JSON.parse(xhr.responseText) as { detail?: string }
+          if (typeof payload.detail === 'string' && payload.detail.length > 0) {
+            detail = payload.detail
+          }
+        } catch {
+          // Ignore JSON parse errors and use the default message.
+        }
+        reject(new Error(detail))
+        return
+      }
+
+      resolve(xhr.responseText)
+    }
+
+    xhr.send(formData)
+  })
+
+  if (options?.onUploadProgress) {
+    options.onUploadProgress(100)
   }
 
-  return (await response.json()) as UploadResponse
+  return JSON.parse(responseText) as UploadResponse
 }
 
 export function deleteDocument(fileName: string) {

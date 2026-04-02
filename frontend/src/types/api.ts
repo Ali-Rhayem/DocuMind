@@ -15,6 +15,8 @@ export type DocumentMetadata = {
   filename?: string
   extension?: string
   size_bytes?: number
+  page_number?: number
+  page_count?: number
   loaded_at?: string
   source_kind?: string
   ocr_used?: boolean
