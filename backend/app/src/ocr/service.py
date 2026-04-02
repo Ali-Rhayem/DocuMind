@@ -24,21 +24,26 @@ def is_supported_ocr_source(path: Path) -> bool:
     return path.suffix.lower() in _OCR_EXTENSIONS
 
 
-def _extract_lines_from_result(result: Any) -> tuple[list[str], list[float]]:
+def _extract_lines_from_result(result: Any) -> tuple[list[str], list[float], list[str]]:
     lines: list[str] = []
     confidences: list[float] = []
+    page_texts: list[str] = []
 
     for page in result:
         rec_texts = page.get("rec_texts", [])
         rec_scores = page.get("rec_scores", [])
+        page_lines: list[str] = []
         for idx, text in enumerate(rec_texts):
             cleaned = str(text).strip()
             if cleaned:
                 lines.append(cleaned)
+                page_lines.append(cleaned)
                 if idx < len(rec_scores):
                     confidences.append(float(rec_scores[idx]))
 
-    return lines, confidences
+        page_texts.append("\n".join(page_lines).strip())
+
+    return lines, confidences, page_texts
 
 
 def extract_text_with_ocr(path: Path) -> dict[str, Any]:
@@ -52,12 +57,13 @@ def extract_text_with_ocr(path: Path) -> dict[str, Any]:
 
     engine = _get_engine()
     result = engine.predict(str(path))
-    lines, confidences = _extract_lines_from_result(result)
+    lines, confidences, page_texts = _extract_lines_from_result(result)
     average_confidence = round(sum(confidences) / len(confidences), 6) if confidences else 0.0
 
     return {
         "source": str(path),
         "text": "\n".join(lines).strip(),
+        "page_texts": page_texts,
         "line_count": len(lines),
         "avg_confidence": average_confidence,
     }
