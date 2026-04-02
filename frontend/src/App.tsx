@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import {
   deleteDocument,
@@ -61,6 +61,16 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
 function getFileDownloadUrl(filename: string, pageNumber?: number): string {
   const encoded = encodeURIComponent(filename)
   const apiBaseUrl =
@@ -70,6 +80,108 @@ function getFileDownloadUrl(filename: string, pageNumber?: number): string {
   const url = `${apiBaseUrl}/files/${encoded}`
   // Add page number if provided (PDF viewer will jump to that page)
   return pageNumber ? `${url}#page=${pageNumber}` : url
+}
+
+function resolveEvidencePage(result: RAGResult): number {
+  const exactPage = result.metadata?.page_number
+  if (typeof exactPage === 'number' && Number.isFinite(exactPage) && exactPage > 0) {
+    return Math.floor(exactPage)
+  }
+
+  // Fallback for older indexed chunks that do not include page metadata.
+  return Math.max(1, Math.floor(result.chunk_index / 3) + 1)
+}
+
+function MessageContent({ content }: { content: string }) {
+  const [copiedBlockIndex, setCopiedBlockIndex] = useState<number | null>(null)
+
+  async function copyCode(code: string, blockIndex: number) {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(code)
+      } else {
+        const tempTextArea = document.createElement('textarea')
+        tempTextArea.value = code
+        tempTextArea.style.position = 'fixed'
+        tempTextArea.style.opacity = '0'
+        document.body.appendChild(tempTextArea)
+        tempTextArea.select()
+        document.execCommand('copy')
+        document.body.removeChild(tempTextArea)
+      }
+
+      setCopiedBlockIndex(blockIndex)
+      window.setTimeout(() => {
+        setCopiedBlockIndex((current) => (current === blockIndex ? null : current))
+      }, 1400)
+    } catch {
+      setCopiedBlockIndex(null)
+    }
+  }
+
+  const parts: Array<{ type: 'text' | 'code'; value: string; language?: string }> = []
+  const codeBlockRegex = /```([a-zA-Z0-9_-]+)?\n([\s\S]*?)```/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', value: content.slice(lastIndex, match.index) })
+    }
+    parts.push({
+      type: 'code',
+      language: match[1] || 'text',
+      value: match[2] ?? '',
+    })
+    lastIndex = codeBlockRegex.lastIndex
+  }
+
+  if (lastIndex < content.length) {
+    parts.push({ type: 'text', value: content.slice(lastIndex) })
+  }
+
+  return (
+    <div className="message-content">
+      {parts.map((part, partIndex) => {
+        if (part.type === 'code') {
+          const codeText = part.value.trimEnd()
+          return (
+            <div key={`code-${partIndex}`} className="message-code-block">
+              <div className="message-code-head">
+                <div className="message-code-language">{part.language}</div>
+                <button
+                  type="button"
+                  className={`message-code-copy ${copiedBlockIndex === partIndex ? 'is-copied' : ''}`}
+                  onClick={() => void copyCode(codeText, partIndex)}
+                  title="Copy code"
+                  aria-label="Copy code"
+                >
+                  <span className="message-code-copy__icon" aria-hidden="true" />
+                  {copiedBlockIndex === partIndex ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <pre>
+                <code>{codeText}</code>
+              </pre>
+            </div>
+          )
+        }
+
+        const paragraphs = part.value
+          .split(/\n{2,}/)
+          .map((block) => block.trim())
+          .filter((block) => block.length > 0)
+
+        return (
+          <Fragment key={`text-${partIndex}`}>
+            {paragraphs.map((paragraph, paragraphIndex) => (
+              <p key={`p-${partIndex}-${paragraphIndex}`}>{paragraph}</p>
+            ))}
+          </Fragment>
+        )
+      })}
+    </div>
+  )
 }
 
 function makeChatTitle(seed: string) {
@@ -132,18 +244,50 @@ function readSidebarCollapsedState() {
   }
 }
 
-function buildQueryFromHistory(messages: ChatMessage[], currentQuestion: string) {
-  const history = messages
-    .slice(-6)
-    .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`)
-    .join('\n')
-    .trim()
+function isLikelyFollowUpQuestion(question: string) {
+  const normalized = question.trim().toLowerCase()
+  if (!normalized) {
+    return false
+  }
 
-  if (!history) {
+  const followUpPrefixes = [
+    /^and\b/,
+    /^what about\b/,
+    /^how about\b/,
+    /^what else\b/,
+    /^tell me more\b/,
+    /^continue\b/,
+    /^go on\b/,
+  ]
+
+  if (followUpPrefixes.some((pattern) => pattern.test(normalized))) {
+    return true
+  }
+
+  return /\b(it|that|this|they|them|those|these|same|above|previous|earlier)\b/.test(normalized)
+}
+
+function buildQueryFromHistory(messages: ChatMessage[], currentQuestion: string) {
+  const trimmedQuestion = currentQuestion.trim()
+  if (!trimmedQuestion) {
     return currentQuestion
   }
 
-  return `Conversation so far:\n${history}\n\nLatest user question: ${currentQuestion}`
+  if (!isLikelyFollowUpQuestion(trimmedQuestion)) {
+    return trimmedQuestion
+  }
+
+  const recentUserQuestions = messages
+    .filter((message) => message.role === 'user')
+    .map((message) => message.content.trim())
+    .filter(Boolean)
+    .slice(-2)
+
+  if (recentUserQuestions.length === 0) {
+    return trimmedQuestion
+  }
+
+  return ['Previous user questions:', ...recentUserQuestions.map((message) => `- ${message}`), '', `Latest follow-up question: ${trimmedQuestion}`].join('\n')
 }
 
 function App() {
@@ -163,11 +307,15 @@ function App() {
   const [sendingMessage, setSendingMessage] = useState(false)
   const [activeGenerationChatId, setActiveGenerationChatId] = useState<string | null>(null)
   const [uploadLoading, setUploadLoading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadPhase, setUploadPhase] = useState<'idle' | 'uploading' | 'indexing' | 'done'>('idle')
+  const [uploadStageText, setUploadStageText] = useState('')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(readSidebarCollapsedState)
   const [deleteCandidate, setDeleteCandidate] = useState<ChatThread | null>(null)
   const [toastMessage, setToastMessage] = useState('')
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const toastTimerRef = useRef<number | null>(null)
+  const indexingProgressTimerRef = useRef<number | null>(null)
 
   const selectedChat = useMemo(
     () => chats.find((chat) => chat.id === selectedChatId) ?? chats[0] ?? null,
@@ -175,6 +323,7 @@ function App() {
   )
 
   const documentCount = documents.length
+  const selectedTotalBytes = useMemo(() => pendingFiles.reduce((sum, file) => sum + file.size, 0), [pendingFiles])
 
   useEffect(() => {
     const payload: PersistedChatState = {
@@ -194,6 +343,15 @@ function App() {
 
   useEffect(() => {
     void refreshWorkspace()
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (indexingProgressTimerRef.current !== null) {
+        window.clearInterval(indexingProgressTimerRef.current)
+        indexingProgressTimerRef.current = null
+      }
+    }
   }, [])
 
   async function refreshWorkspace() {
@@ -387,18 +545,34 @@ function App() {
     }
 
     const selected = Array.from(files)
-    const deduped: File[] = []
-    const seen = new Set<string>()
-    for (const file of selected) {
-      const key = `${file.name.toLowerCase()}::${file.size}`
-      if (seen.has(key)) {
-        continue
-      }
-      seen.add(key)
-      deduped.push(file)
-    }
+    setPendingFiles((current) => {
+      const merged: File[] = [...current]
+      const seen = new Set(current.map((file) => `${file.name.toLowerCase()}::${file.size}`))
 
-    setPendingFiles(deduped)
+      for (const file of selected) {
+        const key = `${file.name.toLowerCase()}::${file.size}`
+        if (seen.has(key)) {
+          continue
+        }
+        seen.add(key)
+        merged.push(file)
+      }
+
+      return merged
+    })
+
+    setUploadNotice('')
+  }
+
+  function removePendingFile(targetKey: string) {
+    setPendingFiles((current) =>
+      current.filter((file) => `${file.name.toLowerCase()}::${file.size}` !== targetKey)
+    )
+    setUploadNotice('')
+  }
+
+  function clearPendingFiles() {
+    setPendingFiles([])
     setUploadNotice('')
   }
 
@@ -409,21 +583,56 @@ function App() {
     }
 
     setUploadLoading(true)
+    setUploadPhase('uploading')
+    setUploadProgress(0)
+    setUploadStageText('Uploading files to backend...')
     setUploadNotice('')
     setWorkspaceNotice('')
 
     try {
-      const uploadResult: UploadResponse = await uploadDocuments(pendingFiles)
+      const uploadResult: UploadResponse = await uploadDocuments(pendingFiles, {
+        onUploadProgress: (percent) => {
+          setUploadPhase('uploading')
+          setUploadProgress(Math.max(1, Math.min(78, Math.round(percent * 0.78))))
+          setUploadStageText(`Uploading files... ${percent}%`)
+        },
+      })
       const rejectedCount = uploadResult.rejected.length
       const skippedCount = uploadResult.skipped.length
 
       if (uploadResult.uploaded_count > 0) {
+        setUploadPhase('indexing')
+        setUploadStageText('Indexing and chunking uploaded documents...')
+
+        if (indexingProgressTimerRef.current !== null) {
+          window.clearInterval(indexingProgressTimerRef.current)
+        }
+
+        indexingProgressTimerRef.current = window.setInterval(() => {
+          setUploadProgress((current) => {
+            if (current >= 96) {
+              return current
+            }
+            return current + 1
+          })
+        }, 250)
+
         const payload: IndexRequest = {
           chunk_size: defaultQueryConfig.chunk_size,
           chunk_strategy: defaultQueryConfig.chunk_strategy,
           overlap: defaultQueryConfig.overlap,
         }
         const rebuildResult = await rebuildIndex(payload)
+
+        if (indexingProgressTimerRef.current !== null) {
+          window.clearInterval(indexingProgressTimerRef.current)
+          indexingProgressTimerRef.current = null
+        }
+
+        setUploadPhase('done')
+        setUploadProgress(100)
+        setUploadStageText('Index complete. Ready for questions.')
+
         const processedDocuments = rebuildResult.processed_documents ?? 0
         const skippedDocuments = rebuildResult.skipped_documents ?? 0
         const removedChunks = rebuildResult.removed_chunks ?? 0
@@ -434,6 +643,9 @@ function App() {
             `${rejectedCount > 0 ? `, rejected ${rejectedCount} unsupported file(s)` : ''}.`
         )
       } else {
+        setUploadPhase('done')
+        setUploadProgress(100)
+        setUploadStageText('Upload complete. No new files were indexed.')
         setUploadNotice(
           `No new files were uploaded${skippedCount > 0 ? ` (${skippedCount} duplicate file(s) skipped)` : ''}${
             rejectedCount > 0 ? ` and ${rejectedCount} unsupported file(s) rejected` : ''
@@ -444,10 +656,22 @@ function App() {
       setPendingFiles([])
       await refreshWorkspace()
     } catch (error) {
+      if (indexingProgressTimerRef.current !== null) {
+        window.clearInterval(indexingProgressTimerRef.current)
+        indexingProgressTimerRef.current = null
+      }
       const message = error instanceof Error ? error.message : 'Upload failed.'
       setUploadNotice(message)
+      setUploadPhase('idle')
+      setUploadProgress(0)
+      setUploadStageText('')
     } finally {
       setUploadLoading(false)
+      window.setTimeout(() => {
+        setUploadPhase('idle')
+        setUploadProgress(0)
+        setUploadStageText('')
+      }, 1400)
     }
   }
 
@@ -554,12 +778,76 @@ function App() {
 
             <div className="upload-panel">
               <label className="file-picker">
-                <input type="file" multiple onChange={(event) => handleFilesSelected(event.target.files)} />
+                <input
+                  type="file"
+                  multiple
+                  onChange={(event) => {
+                    handleFilesSelected(event.target.files)
+                    event.currentTarget.value = ''
+                  }}
+                />
                 <span>{pendingFiles.length > 0 ? `${pendingFiles.length} file(s) selected` : 'Choose files'}</span>
               </label>
               <button type="button" className="button" disabled={uploadLoading} onClick={handleUploadDocuments}>
-                {uploadLoading ? 'Uploading...' : 'Upload and index'}
+                {uploadLoading ? (uploadPhase === 'indexing' ? 'Indexing...' : 'Uploading...') : 'Upload and index'}
               </button>
+
+              {pendingFiles.length > 0 ? (
+                <div className="pending-files-panel" aria-label="Files selected for upload">
+                  <div className="pending-files-panel__header">
+                    <div className="pending-files-panel__summary">
+                      <strong>Ready to upload</strong>
+                      <span>
+                        {pendingFiles.length} file(s) / {formatFileSize(selectedTotalBytes)}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="pending-files-clear"
+                      disabled={uploadLoading}
+                      onClick={clearPendingFiles}
+                    >
+                      Clear all
+                    </button>
+                  </div>
+                  <ul className="pending-files-list">
+                    {pendingFiles.map((file) => {
+                      const fileKey = `${file.name.toLowerCase()}::${file.size}`
+                      return (
+                      <li key={`${file.name}-${file.size}`}>
+                        <span className="pending-files-list__name" title={file.name}>
+                          {file.name}
+                        </span>
+                        <span className="pending-files-list__size">{formatFileSize(file.size)}</span>
+                        <button
+                          type="button"
+                          className="pending-files-remove"
+                          disabled={uploadLoading}
+                          onClick={() => removePendingFile(fileKey)}
+                          aria-label={`Remove ${file.name}`}
+                          title={`Remove ${file.name}`}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    )})}
+                  </ul>
+                </div>
+              ) : null}
+
+              {uploadPhase !== 'idle' ? (
+                <div className="upload-progress-shell" aria-live="polite">
+                  <div className="upload-progress-head">
+                    <strong>{uploadPhase === 'indexing' ? 'Indexing' : uploadPhase === 'done' ? 'Complete' : 'Uploading'}</strong>
+                    <span>{uploadProgress}%</span>
+                  </div>
+                  <div className="upload-progress-track">
+                    <span style={{ width: `${uploadProgress}%` }} />
+                  </div>
+                  <p className="upload-progress-stage">{uploadStageText}</p>
+                </div>
+              ) : null}
+
               {uploadNotice ? <p className="notice notice--success">{uploadNotice}</p> : null}
             </div>
 
@@ -660,24 +948,23 @@ function App() {
               <>
                 {selectedChat.messages.map((message) => (
                   <article key={message.id} className={`message message--${message.role}`}>
-                    <p>{message.content}</p>
+                    <MessageContent content={message.content} />
                     {message.role === 'assistant' && message.evidence.length > 0 ? (
                       <div className="citation-list">
                         {/* Show all evidence as clickable chips with page numbers */}
                         {message.evidence.map((item) => {
                           const filename = item.metadata.filename ?? item.source
-                          // Better page estimation: ~3-4 chunks per page
-                          const estimatedPage = Math.max(1, Math.floor(item.chunk_index / 3) + 1)
+                          const exactPage = resolveEvidencePage(item)
                           
                           return (
                             <button
                               key={item.id}
                               type="button"
                               className="citation-chip"
-                              onClick={() => window.open(getFileDownloadUrl(filename, estimatedPage), '_blank')}
-                              title={`Click to open ${filename} at page ${estimatedPage}`}
+                              onClick={() => window.open(getFileDownloadUrl(filename, exactPage), '_blank')}
+                              title={`Click to open ${filename} at page ${exactPage}`}
                             >
-                              {filename} • p.{estimatedPage}
+                              {filename} • p.{exactPage}
                             </button>
                           )
                         })}
@@ -688,9 +975,7 @@ function App() {
                         <summary>Show evidence ({message.evidence.length} sources)</summary>
                         <ul>
                           {message.evidence.map((item) => {
-                            // Better page estimation based on chunk index
-                            // Assuming ~3-4 chunks per page
-                            const pageNum = Math.max(1, Math.floor(item.chunk_index / 3) + 1)
+                            const pageNum = resolveEvidencePage(item)
                             return (
                               <li key={item.id}>
                                 <div className="evidence-header">
