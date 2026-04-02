@@ -23,9 +23,11 @@ function handleCitationClick(citation: string, results?: RAGResult[]) {
   const result = results.find((r) => r.citation === citation)
   if (!result || !result.metadata?.filename) return
 
-  // Calculate page number from chunk index
-  const estimatedPage = Math.max(1, Math.floor(result.chunk_index / 2) + 1)
-  const fileUrl = getFileDownloadUrl(result.metadata.filename, estimatedPage)
+  const exactPage =
+    typeof result.metadata.page_number === 'number' && result.metadata.page_number > 0
+      ? Math.floor(result.metadata.page_number)
+      : Math.max(1, Math.floor(result.chunk_index / 3) + 1)
+  const fileUrl = getFileDownloadUrl(result.metadata.filename, exactPage)
   window.open(fileUrl, '_blank')
 }
 
