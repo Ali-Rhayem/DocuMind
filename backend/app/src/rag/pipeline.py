@@ -324,8 +324,19 @@ def query_index(query: str, k: int = 3, collection_name: str = "documents") -> d
     rerank_scores = [float(hit.get("rerank_score", 0.0)) for hit in reranked_hits]
     confidences = _normalize_confidence(rerank_scores)
 
+    # Filter out low-confidence results (minimum 0.35 confidence threshold)
+    MIN_CONFIDENCE_THRESHOLD = 0.35
+    filtered_hits = [
+        (hit, conf) for hit, conf in zip(reranked_hits, confidences)
+        if conf >= MIN_CONFIDENCE_THRESHOLD
+    ]
+    
+    # If we filtered too many, keep at least the top result
+    if not filtered_hits and reranked_hits:
+        filtered_hits = [(reranked_hits[0], confidences[0])]
+
     results: list[dict[str, object]] = []
-    for idx, hit in enumerate(reranked_hits):
+    for idx, (hit, confidence) in enumerate(filtered_hits):
         payload = dict(hit.get("payload", {}))
         source = str(payload.get("source", ""))
         chunk_index = int(payload.get("chunk_index", -1))
@@ -337,7 +348,7 @@ def query_index(query: str, k: int = 3, collection_name: str = "documents") -> d
                 "vector_score": round(float(hit.get("vector_score", 0.0)), 6),
                 "bm25_score": round(float(hit.get("bm25_score", 0.0)), 6),
                 "hybrid_score": round(float(hit.get("hybrid_score", 0.0)), 6),
-                "confidence": confidences[idx] if idx < len(confidences) else 0.0,
+                "confidence": confidence,
                 "citation": citation,
                 "source": source,
                 "chunk_index": chunk_index,
