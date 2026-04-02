@@ -1,10 +1,35 @@
-import type { RAGAnswer } from '../types/api.ts'
+import type { RAGAnswer, RAGResult } from '../types/api.ts'
 
 type AnswerPanelProps = {
   answer: RAGAnswer
+  results?: RAGResult[]
 }
 
-export function AnswerPanel({ answer }: AnswerPanelProps) {
+function getFileDownloadUrl(filename: string | undefined, pageNumber?: number): string {
+  if (!filename) return ''
+  const encoded = encodeURIComponent(filename)
+  const apiBaseUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.protocol}//${window.location.hostname}:8000`
+      : 'http://localhost:8000'
+  const url = `${apiBaseUrl}/files/${encoded}`
+  return pageNumber ? `${url}#page=${pageNumber}` : url
+}
+
+function handleCitationClick(citation: string, results?: RAGResult[]) {
+  if (!results) return
+
+  // Find the result matching this citation
+  const result = results.find((r) => r.citation === citation)
+  if (!result || !result.metadata?.filename) return
+
+  // Calculate page number from chunk index
+  const estimatedPage = Math.max(1, Math.floor(result.chunk_index / 2) + 1)
+  const fileUrl = getFileDownloadUrl(result.metadata.filename, estimatedPage)
+  window.open(fileUrl, '_blank')
+}
+
+export function AnswerPanel({ answer, results }: AnswerPanelProps) {
   const statusLabel =
     answer.status === 'generated' ? 'Generated answer' : answer.status === 'fallback' ? 'Evidence summary' : 'No answer'
 
@@ -27,9 +52,15 @@ export function AnswerPanel({ answer }: AnswerPanelProps) {
       {answer.citations.length > 0 ? (
         <div className="citation-row" aria-label="Answer citations">
           {answer.citations.map((citation) => (
-            <span key={citation} className="type-chip">
+            <button
+              key={citation}
+              type="button"
+              className="type-chip type-chip--clickable"
+              onClick={() => handleCitationClick(citation, results)}
+              title="Click to open source document"
+            >
               {citation}
-            </span>
+            </button>
           ))}
         </div>
       ) : null}
