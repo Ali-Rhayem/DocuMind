@@ -61,6 +61,17 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function getFileDownloadUrl(filename: string, pageNumber?: number): string {
+  const encoded = encodeURIComponent(filename)
+  const apiBaseUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.protocol}//${window.location.hostname}:8000`
+      : 'http://localhost:8000'
+  const url = `${apiBaseUrl}/files/${encoded}`
+  // Add page number if provided (PDF viewer will jump to that page)
+  return pageNumber ? `${url}#page=${pageNumber}` : url
+}
+
 function makeChatTitle(seed: string) {
   const compact = seed.trim().replace(/\s+/g, ' ')
   if (!compact) {
@@ -563,13 +574,21 @@ function App() {
                   <div className="documents-list">
                     {documents.map((doc) => (
                       <article key={doc.name} className="document-item">
-                        <div className="document-item__meta">
+                        <button
+                          type="button"
+                          className="document-open"
+                          onClick={() => window.open(getFileDownloadUrl(doc.name), '_blank')}
+                          title={`Open ${doc.name}`}
+                          aria-label={`Open ${doc.name}`}
+                        >
+                          <div className="document-item__meta">
                           <strong title={doc.name}>{doc.name}</strong>
                           <span>
                             {doc.type.toUpperCase()} / {doc.size_mb.toFixed(2)} MB /{' '}
                             {doc.indexed ? `Indexed (${doc.indexed_chunks} chunks)` : 'Not indexed'}
                           </span>
-                        </div>
+                          </div>
+                        </button>
                         <button
                           type="button"
                           className="document-delete"
@@ -642,23 +661,46 @@ function App() {
                 {selectedChat.messages.map((message) => (
                   <article key={message.id} className={`message message--${message.role}`}>
                     <p>{message.content}</p>
-                    {message.citations.length > 0 ? (
+                    {message.role === 'assistant' && message.evidence.length > 0 ? (
                       <div className="citation-list">
-                        {message.citations.map((citation) => (
-                          <span key={citation}>{citation}</span>
-                        ))}
+                        {/* Show all evidence as clickable chips with page numbers */}
+                        {message.evidence.map((item) => {
+                          const filename = item.metadata.filename ?? item.source
+                          // Better page estimation: ~3-4 chunks per page
+                          const estimatedPage = Math.max(1, Math.floor(item.chunk_index / 3) + 1)
+                          
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className="citation-chip"
+                              onClick={() => window.open(getFileDownloadUrl(filename, estimatedPage), '_blank')}
+                              title={`Click to open ${filename} at page ${estimatedPage}`}
+                            >
+                              {filename} • p.{estimatedPage}
+                            </button>
+                          )
+                        })}
                       </div>
                     ) : null}
                     {message.role === 'assistant' && message.evidence.length > 0 ? (
                       <details className="evidence-details">
-                        <summary>Show evidence</summary>
+                        <summary>Show evidence ({message.evidence.length} sources)</summary>
                         <ul>
-                          {message.evidence.slice(0, 4).map((item) => (
-                            <li key={item.id}>
-                              <strong>{item.metadata.filename ?? item.source}</strong>
-                              <p>{item.text}</p>
-                            </li>
-                          ))}
+                          {message.evidence.map((item) => {
+                            // Better page estimation based on chunk index
+                            // Assuming ~3-4 chunks per page
+                            const pageNum = Math.max(1, Math.floor(item.chunk_index / 3) + 1)
+                            return (
+                              <li key={item.id}>
+                                <div className="evidence-header">
+                                  <strong>{item.metadata.filename ?? item.source}</strong>
+                                  <span className="evidence-page"> • Page {pageNum}</span>
+                                </div>
+                                <p>{item.text}</p>
+                              </li>
+                            )
+                          })}
                         </ul>
                       </details>
                     ) : null}
