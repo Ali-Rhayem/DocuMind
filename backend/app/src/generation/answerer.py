@@ -74,7 +74,9 @@ def _openai_answer(query: str, results: list[dict[str, Any]]) -> dict[str, objec
                 "content": (
                     "You are the answer generation layer for a RAG system. "
                     "Answer only from the supplied evidence. "
-                    "Be concise, accurate, and explicit when the evidence is limited."
+                    "Be concise, accurate, and explicit when the evidence is limited. "
+                    "When returning code, use valid fenced markdown code blocks like ```javascript ... ``` "
+                    "with no extra quotes around the fences."
                 ),
             },
             {
