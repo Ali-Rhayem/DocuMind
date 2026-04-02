@@ -31,6 +31,20 @@ function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function getFileDownloadUrl(filename: string): string {
+  const encoded = encodeURIComponent(filename)
+  const apiBaseUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.protocol}//${window.location.hostname}:8000`
+      : 'http://localhost:8000'
+  return `${apiBaseUrl}/files/${encoded}`
+}
+
+function handleDocumentClick(documentName: string) {
+  const fileUrl = getFileDownloadUrl(documentName)
+  window.open(fileUrl, '_blank')
+}
+
 export function SystemOverview({
   indexStats,
   documents,
@@ -121,7 +135,13 @@ export function SystemOverview({
 
           {sourcePreview.length > 0 ? (
             sourcePreview.map((document) => (
-              <article key={document.name} className="source-item">
+              <button
+                key={document.name}
+                type="button"
+                className="source-item source-item--clickable"
+                onClick={() => handleDocumentClick(document.name)}
+                title={`Click to open ${document.name}`}
+              >
                 <div>
                   <p className="source-item__title">{document.name}</p>
                   <p className="source-item__meta">
@@ -129,7 +149,7 @@ export function SystemOverview({
                   </p>
                 </div>
                 <span className="source-item__size">{`${document.size_mb.toFixed(2)} MB`}</span>
-              </article>
+              </button>
             ))
           ) : (
             <div className="empty-state empty-state--compact">
